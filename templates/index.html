@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="id">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Klasifikasi Ras Anjing</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+
+    <div class="container">
+        <div class="card">
+            <h1 style="color: white;">🐶 Identifikasi Ras Anjing</h1>
+            <form method="POST" enctype="multipart/form-data">
+                <label class="upload-box">
+                    <input type="file" name="image" accept="image/*" required onchange="previewImage(event)">
+                    <span>Pilih foto anjing</span>
+                </label>
+                <div class="preview">
+                    <img id="imagePreview"
+                        src="{% if image_base64 %}data:image/jpeg;base64,{{ image_base64 }}{% endif %}"
+                        class="preview-img" {% if image_base64 %}style="display:block" {% endif %}>
+                </div>
+                <button type="submit" class="btn">Mulai Identifikasi</button>
+            </form>
+
+            {% if results %}
+            <div class="results">
+                <h2>Hasil Analisis:</h2>
+
+                {% for r in results %}
+                <div class="result-item">
+                    <span>{{ r.label }}</span>
+                    <span>{{ r.confidence }}%</span>
+                    <div class="bar">
+                        <div class="fill" style="width: {{ r.confidence }}%"></div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+function previewImage(event) {
+    const img = document.getElementById("imagePreview");
+    img.src = URL.createObjectURL(event.target.files[0]);
+    img.style.display = "block";
+}
+</script>
+
+
+</body>
+
+</html>
