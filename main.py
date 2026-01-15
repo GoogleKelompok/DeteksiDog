@@ -1,94 +1,148 @@
-from flask import Flask, render_template, request
 import tensorflow as tf
 import numpy as np
-from PIL import Image
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from sklearn.utils.class_weight import compute_class_weight
 import os
-import base64
-from io import BytesIO
 
 # =========================
-# APP CONFIG
+# PATH CONFIG (VS CODE)
 # =========================
-app = Flask(__name__)
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+DATASET_PATH = os.path.join(BASE_DIR, "dataset")
 MODEL_PATH = os.path.join(BASE_DIR, "models", "dog_classifier_mobilenetv2.h5")
 CLASS_PATH = os.path.join(BASE_DIR, "models", "class_names.npy")
 
+os.makedirs(os.path.join(BASE_DIR, "models"), exist_ok=True)
+
+# =========================
+# TRAINING CONFIG
+# =========================
 IMG_SIZE = (224, 224)
+BATCH_SIZE = 32
+EPOCHS = 25
 
 # =========================
-# LOAD MODEL & CLASSES
+# DATA AUGMENTATION
 # =========================
-model = tf.keras.models.load_model(MODEL_PATH)
-class_names = np.load(CLASS_PATH, allow_pickle=True).tolist()
+datagen = tf.keras.preprocessing.image.ImageDataGenerator(
+    rescale=1./255,
+    validation_split=0.2,
+
+    rotation_range=25,
+    zoom_range=0.2,
+    width_shift_range=0.1,
+    height_shift_range=0.1,
+    shear_range=0.15,
+
+    brightness_range=[0.7, 1.3],
+    horizontal_flip=True,
+    fill_mode="nearest"
+)
+
+train_gen = datagen.flow_from_directory(
+    DATASET_PATH,
+    target_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    subset='training'
+)
+
+val_gen = datagen.flow_from_directory(
+    DATASET_PATH,
+    target_size=IMG_SIZE,
+    batch_size=BATCH_SIZE,
+    class_mode='categorical',
+    subset='validation',
+    shuffle=False
+)
 
 # =========================
-# IMAGE PREPROCESSING
+# SAVE CLASS NAMES
 # =========================
-def smart_resize(img):
-    """Center crop + resize agar konsisten dengan training"""
-    w, h = img.size
-    min_dim = min(w, h)
-    left = (w - min_dim) // 2
-    top = (h - min_dim) // 2
-    img = img.crop((left, top, left + min_dim, top + min_dim))
-    return img.resize(IMG_SIZE)
+class_names = list(train_gen.class_indices.keys())
+np.save(CLASS_PATH, class_names)
 
-def preprocess_image(img):
-    """Preprocess khusus MobileNetV2"""
-    img_array = np.array(img)
-    img_array = tf.keras.applications.mobilenet_v2.preprocess_input(img_array)
-    return np.expand_dims(img_array, axis=0)
+NUM_CLASSES = train_gen.num_classes
+print("Classes:", class_names)
 
 # =========================
-# ROUTE
+# CLASS WEIGHT (IMBALANCE)
 # =========================
-@app.route("/", methods=["GET", "POST"])
-def index():
-    results = None
-    image_base64 = None
-    error = None
+weights = compute_class_weight(
+    class_weight='balanced',
+    classes=np.unique(train_gen.classes),
+    y=train_gen.classes
+)
+class_weights = dict(enumerate(weights))
 
-    if request.method == "POST":
-        file = request.files.get("image")
+# =========================
+# TRANSFER LEARNING
+# =========================
+base_model = tf.keras.applications.MobileNetV2(
+    input_shape=(224, 224, 3),
+    include_top=False,
+    weights='imagenet'
+)
 
-        if file:
-            try:
-                # Load & preview image
-                img = Image.open(file).convert("RGB")
-                img = smart_resize(img)
+base_model.trainable = False
 
-                buffer = BytesIO()
-                img.save(buffer, format="JPEG")
-                image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+model = tf.keras.Sequential([
+    base_model,
+    tf.keras.layers.GlobalAveragePooling2D(),
+    tf.keras.layers.BatchNormalization(),
 
-                # Prediction
-                input_tensor = preprocess_image(img)
-                preds = model.predict(input_tensor, verbose=0)[0]
+    tf.keras.layers.Dense(512, activation='relu'),
+    tf.keras.layers.Dropout(0.6),
 
-                top5_idx = preds.argsort()[-5:][::-1]
+    tf.keras.layers.Dense(NUM_CLASSES, activation='softmax')
+])
 
-                results = [
-                    {
-                        "label": class_names[i],
-                        "confidence": round(float(preds[i]) * 100, 2)
-                    }
-                    for i in top5_idx
-                ]
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(1e-4),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
 
-            except Exception as e:
-                error = f"Terjadi kesalahan saat memproses gambar: {str(e)}"
+callbacks = [
+    EarlyStopping(patience=4, restore_best_weights=True),
+    ReduceLROnPlateau(patience=2, factor=0.3)
+]
 
-    return render_template(
-        "index.html",
-        results=results,
-        image_base64=image_base64,
-        error=error
-    )
+# =========================
+# TRAINING PHASE 1
+# =========================
+model.fit(
+    train_gen,
+    validation_data=val_gen,
+    epochs=EPOCHS,
+    class_weight=class_weights,
+    callbacks=callbacks
+)
 
+# =========================
+# FINE TUNING
+# =========================
+base_model.trainable = True
+for layer in base_model.layers[:-40]:
+    layer.trainable = False
 
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(3e-5),
+    loss='categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+model.fit(
+    train_gen,
+    validation_data=val_gen,
+    epochs=15,
+    callbacks=[EarlyStopping(patience=3, restore_best_weights=True)]
+)
+
+model.save(MODEL_PATH)
+
+val_loss, val_acc = model.evaluate(val_gen)
+print(f"Validation Accuracy : {val_acc*100:.2f}%")
+print(f"Validation Loss     : {val_loss:.4f}")
+print("✅ Model berhasil disimpan")
