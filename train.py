@@ -4,9 +4,9 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 from sklearn.utils.class_weight import compute_class_weight
 import os
 
-# ======================
-# PATH LOKAL
-# ======================
+# =========================
+# PATH CONFIG (VS CODE)
+# =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 DATASET_PATH = os.path.join(BASE_DIR, "dataset")
@@ -15,13 +15,16 @@ CLASS_PATH = os.path.join(BASE_DIR, "models", "class_names.npy")
 
 os.makedirs(os.path.join(BASE_DIR, "models"), exist_ok=True)
 
+# =========================
+# TRAINING CONFIG
+# =========================
 IMG_SIZE = (224, 224)
 BATCH_SIZE = 32
 EPOCHS = 25
 
-# ======================
-# DATA GENERATOR
-# ======================
+# =========================
+# DATA AUGMENTATION
+# =========================
 datagen = tf.keras.preprocessing.image.ImageDataGenerator(
     rescale=1./255,
     validation_split=0.2,
@@ -54,18 +57,18 @@ val_gen = datagen.flow_from_directory(
     shuffle=False
 )
 
-# ======================
+# =========================
 # SAVE CLASS NAMES
-# ======================
+# =========================
 class_names = list(train_gen.class_indices.keys())
 np.save(CLASS_PATH, class_names)
-NUM_CLASSES = train_gen.num_classes
 
+NUM_CLASSES = train_gen.num_classes
 print("Classes:", class_names)
 
-# ======================
-# CLASS WEIGHT
-# ======================
+# =========================
+# CLASS WEIGHT (IMBALANCE)
+# =========================
 weights = compute_class_weight(
     class_weight='balanced',
     classes=np.unique(train_gen.classes),
@@ -73,11 +76,11 @@ weights = compute_class_weight(
 )
 class_weights = dict(enumerate(weights))
 
-# ======================
-# MODEL
-# ======================
+# =========================
+# TRANSFER LEARNING
+# =========================
 base_model = tf.keras.applications.MobileNetV2(
-    input_shape=(224,224,3),
+    input_shape=(224, 224, 3),
     include_top=False,
     weights='imagenet'
 )
@@ -106,9 +109,9 @@ callbacks = [
     ReduceLROnPlateau(patience=2, factor=0.3)
 ]
 
-# ======================
+# =========================
 # TRAINING PHASE 1
-# ======================
+# =========================
 model.fit(
     train_gen,
     validation_data=val_gen,
@@ -117,9 +120,9 @@ model.fit(
     callbacks=callbacks
 )
 
-# ======================
+# =========================
 # FINE TUNING
-# ======================
+# =========================
 base_model.trainable = True
 for layer in base_model.layers[:-40]:
     layer.trainable = False
@@ -137,9 +140,6 @@ model.fit(
     callbacks=[EarlyStopping(patience=3, restore_best_weights=True)]
 )
 
-# ======================
-# SAVE MODEL
-# ======================
 model.save(MODEL_PATH)
 
 val_loss, val_acc = model.evaluate(val_gen)
