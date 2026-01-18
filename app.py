@@ -19,16 +19,25 @@ CLASS_PATH = os.path.join(BASE_DIR, "models", "class_names.npy")
 IMG_SIZE = (224, 224)
 
 # =========================
-# LOAD MODEL & CLASSES
+# GLOBAL MODEL (LAZY LOAD)
 # =========================
-model = tf.keras.models.load_model(MODEL_PATH)
-class_names = np.load(CLASS_PATH, allow_pickle=True).tolist()
+model = None
+class_names = None
+
+def load_model_once():
+    """Load model & class names hanya sekali (saat pertama request)"""
+    global model, class_names
+
+    if model is None or class_names is None:
+        print("🔄 Loading model...")
+        model = tf.keras.models.load_model(MODEL_PATH)
+        class_names = np.load(CLASS_PATH, allow_pickle=True).tolist()
+        print("✅ Model loaded successfully")
 
 # =========================
 # IMAGE PREPROCESSING
 # =========================
 def smart_resize(img):
-    """Center crop + resize agar konsisten dengan training"""
     w, h = img.size
     min_dim = min(w, h)
     left = (w - min_dim) // 2
@@ -37,16 +46,17 @@ def smart_resize(img):
     return img.resize(IMG_SIZE)
 
 def preprocess_image(img):
-    """Preprocess khusus MobileNetV2"""
     img_array = np.array(img)
     img_array = tf.keras.applications.mobilenet_v2.preprocess_input(img_array)
     return np.expand_dims(img_array, axis=0)
 
 # =========================
-# ROUTE
+# ROUTES
 # =========================
 @app.route("/", methods=["GET", "POST"])
 def index():
+    load_model_once()
+
     results = None
     image_base64 = None
     error = None
@@ -56,7 +66,6 @@ def index():
 
         if file:
             try:
-                # Load & preview image
                 img = Image.open(file).convert("RGB")
                 img = smart_resize(img)
 
@@ -64,7 +73,6 @@ def index():
                 img.save(buffer, format="JPEG")
                 image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-                # Prediction
                 input_tensor = preprocess_image(img)
                 preds = model.predict(input_tensor, verbose=0)[0]
 
@@ -88,7 +96,9 @@ def index():
         error=error
     )
 
-
+# =========================
+# ENTRY POINT (LOCAL ONLY)
+# =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
